@@ -13,6 +13,8 @@ hmmer (http://hmmer.org/)
 This process also uses an altered version of MultiParanoid (
 
 Input is protein fasta files (1 per organism) and gff3 files (required for synteny analysis).
+The files should all be in one directory. Running the ortholog_pipeline.sh script should be sufficient to run the process.
+The shell script can be altered to customize analysis.
 
 Output is a tab-delimited table with the following columns
 1. mcl cluster id
