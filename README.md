@@ -4,6 +4,7 @@ A flexible pipeline for deducing orthology relationships between proteins in gen
 Data that can be generated and considered includes pairwise (BLASTP/DIAMOND) bi-directional best hits, synteny (conserved gene order), and membership in TIGRfam equivalog families (based on embedded trusted cutoffs).
 
 Input is protein fasta files (1 per organism) and gff3 files (required for synteny analysis).
+The fasta identifiers must match the ID values in the gff3 file.
 
 Output is a tab-delimited table with the following columns
 1. mcl cluster id

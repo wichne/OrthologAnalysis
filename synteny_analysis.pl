@@ -1,11 +1,12 @@
 #!/usr/bin/perl
-use DBI;
 use Getopt::Std;
 use strict;
+use Cwd;
 
 my %arg;
-&getopts('c:m:',\%arg);
+&getopts('c:',\%arg);
 my $bbhfile = $arg{c} ? $arg{c} : "multiparanoid.out";
+if (!-e $bbhfile) { die "$bbhfile can't be found in " . cwd() . "\n"; }
 my $outfile = "synteny_ortho.out";
 open(my $OUT, ">$outfile") or die "Can't open $outfile for write: $!\n";
 
@@ -19,12 +20,12 @@ my %LOOKUP;
 # holds genes in positional order by sequence (in case multiple) and db
 # ie $GENES->{db}->{seqid} = [gene1, gene2, gene3,...]
 my $GENES = {}; 
-for my $gfile (glob("input/*.gff")) {
+for my $gfile (glob("*.gff")) {
     &process_gff_file($gfile, $GENES, \%LOOKUP);
 }
 # Alternative ways to get same info
 # get sequences and genes from the sets and make ordered structures
-    # 
+# 
 #    foreach my $set ($set1, $set2) {
 #	if (-e "$set.info" && ! defined $INFO{$set}) {
 #	    &process_info_file($set, $GENES, \%LOOKUP);
@@ -41,6 +42,7 @@ for my $gfile (glob("input/*.gff")) {
 my %GENECLUST;
 open my $clusterIN, $bbhfile or die "Pluh.\n";
 while (my $line = <$clusterIN>) {
+    if ($line =~ /^clusterID/) { next }
     chomp $line;
     my ($clust_id,
 	$genome,
@@ -58,17 +60,17 @@ my $syngroupcount;
 my %GROUP;
 my %INFO;
 
-# read in an .ortho file
+# read in a BBH file
 # with format
 # id, bits?, genome, (1)?, protein_id, confidence(100%)?
-while (my $file = glob("BBH/*.ortho")) {
+while (my $file = glob("*_BBH_*")) {
     my %BBH;
     # get the set names
     my ($set1, $set2);
-    if ($file =~ /BBH\/([^\.]+)\.([^\.]+)\.ortho/) {
+    if ($file =~ /(.+)\_BBH\_(.+)/) {
 	$set1 = $1;
 	$set2 = $2;
-    } else { die "Set names can't be determined from filename $file. Needs to be set1.set2.ortho\n";}
+    } else { die "Set names can't be determined from filename $file. Needs to be set1_BBH_set2\n";}
 
 
     # why am I doing this if I have the BBH clusters in GENECLUST?
@@ -98,6 +100,8 @@ while (my $file = glob("BBH/*.ortho")) {
 	# see if the upstream and downstream genes are bbhs with 
 	# the bbh's upstream and downstream genes
 	# First, get the 2 upstream and 2 downstream genes for both g and h
+	if (! $LOOKUP{$g}->{'set'}) { warn "!No set for $g\n";}
+	if (! $LOOKUP{$h}->{'set'}) { warn "No set for $g\n";}
 	my $usg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}+1];
 	my $dsg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}-1];
 	my $ush1 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}+1];
@@ -133,7 +137,7 @@ while (my $file = glob("BBH/*.ortho")) {
 		    # two points for a match to the paired BBH
 		    $syn_score += 2 if ($BBH{$set1}->{$sg} && ($BBH{$set1}->{$sg} eq $sh));
 		    # a bonus point if the BBH is a part of a global cluster.
-		    $syn_score += 1 if ($GENECLUST{$sg} && ($GENECLUST{$sg} eq $GENECLUST{$sh}));
+		    $syn_score += 1 if ($GENECLUST{$set1}->{$sg} && ($GENECLUST{$set1}->{$sg} eq $GENECLUST{$set2}->{$sh}));
 		}
 	    }
 
@@ -168,11 +172,11 @@ print "Id\t" . join("\t", sort keys %$GENES) . "\n";
 
 foreach my $i (sort {$a<=>$b} keys %GROUP) {
     print "$i";
-    foreach my $g(sort keys %$GENES) {
+    foreach my $g(sort keys %GENECLUST) {
 	print "\t" . $GROUP{$i}->{$g};
     }
-#    print "$g\t";
-#    &explode_print(\%SYN, $g);
+    #    print "$g\t";
+    #    &explode_print(\%SYN, $g);
     print "\n";
 }
 
@@ -254,17 +258,22 @@ sub process_gtf_file {
 			       'seq' => $D{$acc}->{seq},
 			       'idx' => $#{$GENES->{$set}->{$D{$acc}->{seq}}}};
     }
-	
+    
 }
 
 sub process_gff_file {
+    # this goes through the gff file and builds a structure
+    # by db and contig that holds all gene accs in order of position
+    # And a structure allowing lookup of db and contig by acc
+    
     my $file = shift;
     my $GENES = shift;
     my $LOOKUP = shift;
+    print STDERR "Processing $file\n";
 
     $file =~ /(.*\/)?(.*)\.gff$/;
-    my $set = $2;
-    if (! $set) { die "Can't get set from $file\n"; }
+    my $set = $2; # = db
+    if (! $set) { die "Can't get db/set from $file\n"; }
     
     open(my $gff, $file) or die "Can't open $file for read: $!\n";
     my %D;
@@ -282,21 +291,12 @@ sub process_gff_file {
 	if ($type ne "CDS") { next }
 	my @n = split(/;/, $notes);
 
-	# This really is the biggest pain - finding which identifier in the 'notes'
-	# fields matches the identifier in the fasta file. Always needs tweaking
-	# depending on the source of the files. Sometimes it's in ID, sometimes
-	# 'name', sometimes 'locus_tag', sometimes 'protein_id'. Frustrating.
+	# Enforce that fasta acc has to match ID field
 	my $racc; # for 'raw accession'
-	if ($n[0] =~ /ID=(.*)/) { $racc = $1; $racc =~ s/^cds-//; }
-	for my $m(@n) {
-	    if ($m =~ /^protein_id=(.*)/) {
-		$racc = $1;
-		last;
-	    } elsif ($m =~ /^locus_tag=(.*)/) {
-		$racc = $1;
-	    }
-	}
-	if (! $racc) { warn "Wait, couldn't find an accession in $notes\n"; }
+	if ($n[0] =~ /ID=(.*)/) { $racc = $1; }
+	else { die "What is up with your gff file notes field? Where is 'ID'? '$notes'\n"; }
+	
+	if (! $racc) { die "Couldn't find an accession in $notes\n"; }
 
 	# clean up the accession
 	my @acc = split/\|/, $racc;
@@ -313,5 +313,5 @@ sub process_gff_file {
 			       'seq' => $D{$acc}->{seq},
 			       'idx' => $#{$GENES->{$set}->{$D{$acc}->{seq}}}};
     }
-	
+    
 }

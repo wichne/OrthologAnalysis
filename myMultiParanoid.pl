@@ -9,7 +9,6 @@
 # The program is a postprocessor of ortholog tables produced by InParanoid. It combines pairwise InParanoid outputs (say, A-B, B-C, A-C) and makes multi-species clusters of orthologs ABC. 
 
 use strict vars;
-use DBI;
 use Getopt::Long;
 use Cwd;
 require 5.002;
@@ -93,9 +92,9 @@ else {
 my $dir = getcwd();
 chdir($inputdir);
 my %foo;
-my @files = glob "*.ortho";
+my @files = glob "*_BBH_*";
 foreach my $s (@files) {
-    if ($s =~ /(.*)\.(.*)\.ortho/) {
+    if ($s =~ /(.*)\_BBH\_(.*)/) {
 	$foo{$1}++;
 	$foo{$2}++;
     } else { warn "Malformed ortho filename $s - extra '.'s" }
@@ -104,7 +103,7 @@ foreach my $s (@files) {
 chdir($dir);
 
 print LOG "Species list: ".join(', ', @species)."\n";
-if (@species < 3) { die "No need to run program on less than 3 species\n";}
+#if (@species < 3) { die "No need to run program on less than 3 species\n";}
 
 # '-'-joined sorted list of species
 $specletters = fstLetters(@species);
@@ -130,16 +129,16 @@ print "Genome pairs found and used: \n"  if $debug > 0;
 for ($s1 = 0; $s1 < $nspec; $s1++) {
     for ($s2 = $s1+1; $s2 < $nspec; $s2++) {
 #	next if ($species[$s1] eq $species[$s2]);
-	$Pair = $species[$s1].'.'.$species[$s2];
+	$Pair = $species[$s1].'_BBH_'.$species[$s2];
 #	$Pair = $species[$s1].'___'.$species[$s2];
-	$inputfile = "$inputdir/$Pair.ortho";
+	$inputfile = "$inputdir/$Pair";
 	if (-e $inputfile) {
 	    loadData($inputfile);
 	    print LOG "$inputfile loaded.\n";
 	    $npairs++;
 	} else {
-	    $Pair = $species[$s2].'.'.$species[$s1];
-	    $inputfile = "$inputdir/$Pair.ortho";
+	    $Pair = $species[$s2].'_BBH_'.$species[$s1];
+	    $inputfile = "$inputdir/$Pair";
 	    if (-e $inputfile) {
 		loadData($inputfile);
 		print LOG "$inputfile loaded.\n";
@@ -155,7 +154,7 @@ die "Not enough (or too many) species pair files ($npairs) for ".join(", ", @spe
 $clusno = 1;
 for $sp1(@species) {
     for $sp2(@species) {
-	$thepair = "$sp1.$sp2";
+	$thepair = "${sp1}_BBH_${sp2}";
 
 	# $source_by_cluster is built by loadData.
 	next if (!$source_by_cluster->{$thepair} or ($sp1 eq $sp2));
