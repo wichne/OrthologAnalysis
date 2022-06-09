@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-#This is a script that makes output from the 
+#This is a script that makes output from the intermediate results files of the pipeline
 use strict;
 use Getopt::Long;
 use lib $ENV{ORTHO};
