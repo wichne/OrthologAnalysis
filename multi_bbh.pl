@@ -32,7 +32,10 @@ my $file = $arg{'i'} or die "Need to provide input btab file with -i\n";
 my $path = $arg{'p'};
 my $ext = $arg{'e'} ? $arg{'e'} : 'faa';
 
+$| = 1;
 my $VERBOSE = 1;
+my $LOG = $$ . ".multi_bbh.log";
+open(LOG, ">$LOG") or warn "Can't write log file $LOG: $!\n";
 
 our $length_cutoff = 0.7;
 our $id_cutoff = 30;
@@ -56,7 +59,19 @@ for (my $i=0; $i<@DB; $i++) {
     for (my $j=$i+1; $j<@DB; $j++) {
 	my $db2 = $DB[$j];
 	print STDERR "...with $db2\n";
-	if (! defined $per_id_ref->{$db1}->{$db2}) { next } # If we don't have scores for these two dbs
+	
+	my $outfile = "BBH/${db1}_BBH_${db2}";
+	if (! -e "BBH") { system("mkdir BBH"); }
+	if (-s $outfile) {
+	    print STDERR "\tfile $outfile already exists - skipping.\n";
+	    next;
+	}
+	
+	if (! defined $per_id_ref->{$db1}->{$db2}) {
+		print LOG "!!WARN: No scores for $db1 v $db2\n";
+	    warn "Why no scores for $db1 v $db2??";
+	    next
+	} # If we don't have scores for these two dbs
 
 	# Calculate the AAI for the two genomes so we can set a threshhold.
 	my $index = scalar(@{$per_id_ref->{$db1}->{$db2}}); # how many bbhs are there?
@@ -74,14 +89,14 @@ for (my $i=0; $i<@DB; $i++) {
 	if ($keep_threshold < $id_cutoff) { $keep_threshold = $id_cutoff }
 	
 	if ($VERBOSE) {
-	    print "$db1 - $db2\n";
-	    print "index =    $index\n";
-	    printf "Avg per_id = %.2f\n",$avg;
-	    printf "St dev     = %.2f\n",$stdev;
-	    print "Keep threshold  = $keep_threshold\n";
+	    print LOG "$db1 - $db2\n";
+	    print LOG "index =    $index\n";
+	    printf LOG "Avg per_id = %.2f\n",$avg;
+	    printf LOG "St dev     = %.2f\n",$stdev;
+	    print LOG "Keep threshold  = $keep_threshold\n";
 	}
 	
-	open OUT, ">$path/${db1}_BBH_${db2}";	
+	open OUT, ">$outfile";	
 
 	# we want to print out because this is the multiparanoid input
 	# OID     bits    'species'               'IPscore'  gene        boostrap
@@ -117,33 +132,36 @@ sub look_for_bbh {
     
     # Go through each protein
     foreach my $p (keys %$HITS) {
-	my $db = $PtoDB->{$p};
-	if (!$db) { die "Where did this protein come from? It's not in any of the parsed fasta files: $p\n";}
+		my $db = $PtoDB->{$p};
+		if (!$db) { 
+			print LOG "Where did this protein come from? It's not in any of the parsed fasta files: $p\n";
+			die "Where did this protein come from? It's not in any of the parsed fasta files: $p\n";
+		}
 
-	# go through each db
-	foreach my $qdb (@DB) {
-	    # skip if there's no hits
-	    if (! defined $HITS->{$p}->{$qdb}->{'tophit'}) { next }
+		# go through each db
+		foreach my $qdb (@DB) {
+			# skip if there's no hits
+			if (! defined $HITS->{$p}->{$qdb}->{'tophit'}) { next }
 
-	    my $q = $HITS->{$p}->{$qdb}->{'tophit'}; # ie top hit from other genome
-	    # Check for unidirectional hits. 
-	    if (! defined $HITS->{$q}->{$db}) {   # perhaps because length cutoff wasnt' met for a fusion protein...
-		# Not sure why this code is here. Do we really want to include 
-		# unidirectional hits?
-		# print OUT "$p\t$q\t$HITS{$p}->{$qdb}->{per_id}\t!!! no reciprocal hit\n";
-		# $BBH{$p} = {$q};
-	    }
-	    # This is the magic - when two proteins are reciprocal best matches
-	    elsif ($HITS->{$q}->{$db}->{'tophit'} eq $p) {
-		if ($BBH{$p}->{$qdb} eq $q && $BBH{$q}->{$db} eq $p) { next } # we already found this one
-		# print "$p\t$q\t$HITS{$p}->{$qdb}->{bits}\n";
-		# Add per_ids to array for AAAI calculation
-		push @{$per_id_ref{$db}->{$qdb}}, ($HITS->{$p}->{$qdb}->{'per_id'}, $HITS->{$q}->{$db}->{'per_id'});
-		push @{$per_id_ref{$qdb}->{$db}}, ($HITS->{$p}->{$qdb}->{'per_id'}, $HITS->{$q}->{$db}->{'per_id'});
-		$BBH{$p}->{$qdb} = $q;
-		$BBH{$q}->{$db} = $p;
-	    }
-	}
+			my $q = $HITS->{$p}->{$qdb}->{'tophit'}; # ie top hit from other genome
+			# Check for unidirectional hits. 
+			if (! defined $HITS->{$q}->{$db}) {   # perhaps because length cutoff wasnt' met for a fusion protein...
+				# Not sure why this code is here. Do we really want to include 
+				# unidirectional hits?
+				# print OUT "$p\t$q\t$HITS{$p}->{$qdb}->{per_id}\t!!! no reciprocal hit\n";
+				# $BBH{$p} = {$q};
+			}
+			# This is the magic - when two proteins are reciprocal best matches
+			elsif ($HITS->{$q}->{$db}->{'tophit'} eq $p) {
+				if ($BBH{$p}->{$qdb} eq $q && $BBH{$q}->{$db} eq $p) { next } # we already found this one
+				# print "$p\t$q\t$HITS{$p}->{$qdb}->{bits}\n";
+				# Add per_ids to array for AAAI calculation
+				push @{$per_id_ref{$db}->{$qdb}}, ($HITS->{$p}->{$qdb}->{'per_id'}, $HITS->{$q}->{$db}->{'per_id'});
+				push @{$per_id_ref{$qdb}->{$db}}, ($HITS->{$p}->{$qdb}->{'per_id'}, $HITS->{$q}->{$db}->{'per_id'});
+				$BBH{$p}->{$qdb} = $q;
+				$BBH{$q}->{$db} = $p;
+			}
+		}
     }
     return (\%per_id_ref);
 }
@@ -152,9 +170,12 @@ sub read_file {
     my $file = shift;
     my $PtoDB = shift;
     
-    print STDERR "Reading file $file\n";
-    open my $IN, $file or die "Can't open file $file : $!\n";
-
+    print LOG "Reading input file $file\n";
+    print STDERR "Reading input file $file\n";
+    open my $IN, $file or 
+		(print LOG "Can't open file $file : $!\n" &&
+		die "Can't open file $file : $!\n");
+	
     my $header;
     my $last;
     while (my $line = <$IN>) {
@@ -183,15 +204,23 @@ sub read_file {
 	    $qry_len = 1;
 	    $ref_len = 1;
 	} else {
-	    die "Don't recognize format of tabulated blast output\n";
+	    print LOG "Don't recognize format of tabulated blast output\n";
+		die "Don't recognize format of tabulated blast output\n";
 	}
 
+	# Had a problem where a complex product descriptor:
+	# >WP_003704837.1 (galactosaminyl)2-N,N'-diacetylbacillosaminyl-alpha1-diphospho-di-trans,octa-cis-undecaprenol synthase PglE [Neisseria gonorrhoeae]
+	# was showing up appended to the accession in the btab:
+	# WP_003704837.1(galactosaminyl)2-N,N'-diacetylbacillosaminyl-alpha1-diphospho-di-trans,octa-cis-undecaprenol
+	# Not sure if this is a blast problem or a btab problem - Had to 'manually' fix this in the btab file.
 	if (! defined $PtoDB->{$qryacc}) {
-	    die "Hey, fool. The accession $f[0] ($qryacc) isn't in the fasta file. Huh?\n";
+	    print LOG "The query accession $f[0] ($qryacc) isn't in the fasta file. This needs to be fixed.\n";
+		die "The query accession $f[0] ($qryacc) isn't in the fasta file. This needs to be fixed.\n";
 	}
 	
 	if (! defined $PtoDB->{$refacc}) {
-	    die "Hey, fool. The accession $f[4] ($refacc) isn't in the fasta file. Huh?\n";
+	    print LOG "The reference accession $f[4] ($refacc) isn't in the fasta file. This needs to be fixed.\n";
+		die "The reference accession $f[4] ($refacc) isn't in the fasta file. This needs to be fixed.\n";
 	}
 	
 	# self hit
@@ -204,20 +233,21 @@ sub read_file {
 	
 	# This is the meat right here. Comparison against length and id cutoffs
 	# populates the Data table.
-	if (!defined $HITS->{$qryacc}->{$PtoDB->{$refacc}} &&  # this is the top hit to this genome
-	    $per_id >= $id_cutoff &&
-	    $ref_len/$qry_len >= $length_cutoff) {
+	if (!(defined($HITS->{$qryacc}->{$PtoDB->{$refacc}})) &&  # this is the top hit to this genome
+	    ($per_id >= $id_cutoff) &&
+		((($f[3]-$f[2]+1)/$f[1] > $length_cutoff) || (($f[8]-$f[7]+1)/$f[6] > $length_cutoff))) {
+#	    $ref_len/$qry_len >= $length_cutoff) {
 	    # why do I calculate this score and then not use it? I guess this gets piped to paranoid, and it doesn't like non-1 values?
-	    my $score = $HITS->{$qryacc}->{self_hit} ? $bits/$HITS->{$qryacc}->{self_hit} : 1;
-	    $HITS->{$qryacc}->{$PtoDB->{$refacc}} = {'header' => $header,
-							 'tophit' => $refacc,
-							 'per_id' => $per_id,
-							 'bits'   => $bits,
-							 'score'  => 1,
-							 'blast_data' => $line};
+		my $score = $HITS->{$qryacc}->{self_hit} ? $bits/$HITS->{$qryacc}->{self_hit} : 1;
+		$HITS->{$qryacc}->{$PtoDB->{$refacc}} = {'header' => $header,
+						'tophit' => $refacc,
+						'per_id' => $per_id,
+						'bits'   => $bits,
+						'score'  => 1,
+						'blast_data' => $line};
+			}
+			$header = "";
 	}
-	$header = "";
-    }
     close $IN;
     return $HITS;
 }

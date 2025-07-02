@@ -53,6 +53,7 @@ my($npairs, $i, $j, $ii, $ee, $gg, $nn, $oo, $s2, $s1, $nspec, $as, $newmain, @d
 
 $algo 		= 'onlymains';
 $debug 		= 0;
+$| = 1;
 $use_bootstrap = 0;
 $maxINPscore = 1;
 $toMainOrthologOfSelf = 0;

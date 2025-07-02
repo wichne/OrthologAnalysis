@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 use Getopt::Std;
+use lib $ENV{ORTHO};
+use OrthologAnalysis;
 use strict;
 use Cwd;
 
@@ -11,6 +13,12 @@ my $outfile = "synteny_ortho.out";
 open(my $OUT, ">$outfile") or die "Can't open $outfile for write: $!\n";
 
 # check each gene in a gff file for synteny family
+# For each gene in a gff file, see if it is a member of an MCL
+# If it's not, then we move on to the next and report no synteny
+# If it is, compare the target gene to all other genes in the cluster,
+# looking for primarily BBH, but secondarily MCL membership of upstream
+# and down stream genes.
+# 
 
 # holds the db, sequence, position for each gene
 # ie $LOOKUP{gene} = {set => db,
@@ -19,9 +27,11 @@ open(my $OUT, ">$outfile") or die "Can't open $outfile for write: $!\n";
 my %LOOKUP;
 # holds genes in positional order by sequence (in case multiple) and db
 # ie $GENES->{db}->{seqid} = [gene1, gene2, gene3,...]
-my $GENES = {}; 
-for my $gfile (glob("*.gff")) {
-    &process_gff_file($gfile, $GENES, \%LOOKUP);
+my $GENES = {};
+my @db; 
+for my $gfile (glob("../input/*.gff")) {
+    my $db = &process_gff_file($gfile, $GENES, \%LOOKUP);
+	push @db, $db;
 }
 # Alternative ways to get same info
 # get sequences and genes from the sets and make ordered structures
@@ -40,18 +50,34 @@ for my $gfile (glob("*.gff")) {
 
 # read in the multiparanoid BBH cluster output
 my %GENECLUST;
-open my $clusterIN, $bbhfile or die "Pluh.\n";
+my %CLUSTER;
+open(my $clusterIN, $bbhfile) or die "Can't open $bbhfile for read: $!.\n";
 while (my $line = <$clusterIN>) {
-    if ($line =~ /^clusterID/) { next }
+    if ($line =~ /^clusterID/) { next } # this is the header line
     chomp $line;
-    my ($clust_id,
-	$genome,
-	$protein,
-	$is_seed,
-	$confidence,
-	$all_species,
-	$tree_conflict) = split(/\t/, $line);
-    $GENECLUST{$genome}->{$protein} = $clust_id;
+	my ($clust_id,
+			$genome,
+			$protein,
+			$is_seed,
+			$confidence,
+			$all_species,
+			$tree_conflict);
+
+	my @clust = split(/\t/, $line);
+	if (@clust == 2) { # this is mmseqs2 output
+		($clust_id,
+		 $protein) = @clust;
+	} elsif (@clust == 7) { 	# this is multiparanoid output
+	    ($clust_id,
+			$genome,
+			$protein,
+			$is_seed,
+			$confidence,
+			$all_species,
+			$tree_conflict) = @clust;
+	}
+    $GENECLUST{$protein} = $clust_id;
+	push @{$CLUSTER{$clust_id}}, $protein;
 }
 
 my %SYN;
@@ -63,104 +89,106 @@ my %INFO;
 # read in a BBH file
 # with format
 # id, bits?, genome, (1)?, protein_id, confidence(100%)?
-while (my $file = glob("*_BBH_*")) {
+while (my $file = glob("BBH/*_BBH_*")) {
+	print STDERR "Examining $file\n";
     my %BBH;
     # get the set names
     my ($set1, $set2);
-    if ($file =~ /(.+)\_BBH\_(.+)/) {
-	$set1 = $1;
-	$set2 = $2;
+    if ($file =~ /BBH\/(.+)\_BBH\_(.+)/) {
+		$set1 = $1;
+		$set2 = $2;
     } else { die "Set names can't be determined from filename $file. Needs to be set1_BBH_set2\n";}
 
-
     # why am I doing this if I have the BBH clusters in GENECLUST?
+	# because geneclust isn't necessarily 1:1
     # read the bbhs into a structure
     open (my $bbh_in, $file) or die "Can't open $file: $!\n";
     while (my $line1 = <$bbh_in>) {
-	my @f1 = split(/\s+/, $line1);
-	my @acc1 = split(/\|/, $f1[4]);
-	# many of the accessions have 'db|acc' structure, so make sure we get an acc by 
-	my $acc1 = @acc1 > 1 ? $acc1[1] : $acc1[0];
+		my @f1 = split(/\s+/, $line1);
+		my @acc1 = split(/\|/, $f1[4]);
+		# many of the accessions have 'db|acc' structure, so make sure we get an acc by 
+		my $acc1 = @acc1 > 1 ? $acc1[1] : $acc1[0];
 
-	# lines come in pairs, so read in second line
-	my $line2 = <$bbh_in>;
-	my @f2 = split(/\s+/, $line2);
-	my @acc2 = split(/\|/, $f2[4]);
-	my $acc2 = @acc2 > 1 ? $acc2[1] : $acc2[0];
+		# lines come in pairs, so read in second line
+		my $line2 = <$bbh_in>;
+		my @f2 = split(/\s+/, $line2);
+		my @acc2 = split(/\|/, $f2[4]);
+		my $acc2 = @acc2 > 1 ? $acc2[1] : $acc2[0];
 
-	# make sure the lines pair appropriately by the bbh id
-	if ($f1[0] != $f2[0]) { die "Problem with bbh file $file:\n$line1$line2"; }
-	# I guess we won't worry for now about identical accs between genomes
-	$BBH{$set1}->{$acc1} = $acc2;
-	$BBH{$set2}->{$acc2} = $acc1;
+		# make sure the lines pair appropriately by the bbh id
+		if ($f1[0] != $f2[0]) { die "Problem with bbh file $file:\n$line1$line2"; }
+		# I guess we won't worry for now about identical accs between genomes
+		$BBH{$set1}->{$acc1} = $acc2;
+		$BBH{$set2}->{$acc2} = $acc1;
     }
     
     # g and h are the two genes in each BBH pair (only for these two sets)
     while (my ($g, $h) = each %{$BBH{$set1}}) {
-	# see if the upstream and downstream genes are bbhs with 
-	# the bbh's upstream and downstream genes
-	# First, get the 2 upstream and 2 downstream genes for both g and h
-	if (! $LOOKUP{$g}->{'set'}) { warn "!No set for $g\n";}
-	if (! $LOOKUP{$h}->{'set'}) { warn "No set for $g\n";}
-	my $usg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}+1];
-	my $dsg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}-1];
-	my $ush1 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}+1];
-	my $dsh1 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}-1];
-	my $usg2 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}+2];
-	my $dsg2 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}-2];
-	my $ush2 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}+2];
-	my $dsh2 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}-2];
-	#	print "$usg\t$g\t$dsg  <=>  $ush\t$h\t$dsh\n$BBH{$usg}\t$BBH{$g}\t$BBH{$dsg}  <=>  $BBH{$ush}\t$BBH{$h}\t$BBH{$dsh}\n\n" if (($BBH{$usg} && ($BBH{$usg} eq $ush || $BBH{$usg} eq $dsh)) || ($BBH{$dsg} && ($BBH{$dsg} eq $ush || $BBH{$dsg} eq $dsh)));
+		# see if the upstream and downstream genes are bbhs with 
+		# the bbh's upstream and downstream genes
+		# First, get the 2 upstream and 2 downstream genes for both g and h
+		if (! $LOOKUP{$g}->{'set'}) { warn "!No set for $g\n";}
+		if (! $LOOKUP{$h}->{'set'}) { warn "No set for $g\n";}
+		my $usg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}+1];
+		my $dsg1 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}-1];
+		my $ush1 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}+1];
+		my $dsh1 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}-1];
+		my $usg2 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}+2];
+		my $dsg2 = $GENES->{$LOOKUP{$g}->{'set'}}->{$LOOKUP{$g}->{'seq'}}->[$LOOKUP{$g}->{'idx'}-2];
+		my $ush2 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}+2];
+		my $dsh2 = $GENES->{$LOOKUP{$h}->{'set'}}->{$LOOKUP{$h}->{'seq'}}->[$LOOKUP{$h}->{'idx'}-2];
+		#	print "$usg\t$g\t$dsg  <=>  $ush\t$h\t$dsh\n$BBH{$usg}\t$BBH{$g}\t$BBH{$dsg}  <=>  $BBH{$ush}\t$BBH{$h}\t$BBH{$dsh}\n\n" if (($BBH{$usg} && ($BBH{$usg} eq $ush || $BBH{$usg} eq $dsh)) || ($BBH{$dsg} && ($BBH{$dsg} eq $ush || $BBH{$dsg} eq $dsh)));
 
-	# check to see if these have already been put in a synteny group
-	# and if they are the same. If so, we are done.
-	# If not, apparently merging didn't work so well
-	if (defined $SYNGROUP{$g} && defined $SYNGROUP{$h}){
-	    if ($SYNGROUP{$g} == $SYNGROUP{$h}) {
-		# Hooray!
-	    } else {
-		# Hrm.
-		# print STDERR "Merging groups $SYNGROUP{$g} and $SYNGROUP{$h}\n";
-		# my $deletegroup = $SYNGROUP{$h};
-		# foreach my $i (keys %{$GROUP{$deletegroup}}) {
-		#     $SYNGROUP{$i} = $SYNGROUP{$g};
-		#     $GROUP{$SYNGROUP{$g}}->{$i} = 1;
-		# }
-		# delete $GROUP{$deletegroup};
-	    }
-	} else {
-	    # Let's see if these guys are syntenic.
-	    # we will score all combinations, to account for (single) indels and reverse orientation
-	    my $syn_score = 0;
-	    foreach my $sg ($usg1, $dsg1, $usg2, $dsg2) {
-		foreach my $sh ($ush1, $dsh1, $ush2, $dsh2) {
-		    # two points for a match to the paired BBH
-		    $syn_score += 2 if ($BBH{$set1}->{$sg} && ($BBH{$set1}->{$sg} eq $sh));
-		    # a bonus point if the BBH is a part of a global cluster.
-		    $syn_score += 1 if ($GENECLUST{$set1}->{$sg} && ($GENECLUST{$set1}->{$sg} eq $GENECLUST{$set2}->{$sh}));
-		}
-	    }
-
-	    if ($syn_score > 1) {
-		# so now, if one is part of a group, we add the other to the group
-		# otherwise, we start a new syngroup
-		if (defined $SYNGROUP{$g}) {
-		    $SYNGROUP{$h} = $SYNGROUP{$g};
-		    $GROUP{$SYNGROUP{$g}}->{$set1} = $g;
-		    $GROUP{$SYNGROUP{$h}}->{$set2} = $h;
-		} elsif (defined $SYNGROUP{$h}) {
-		    $SYNGROUP{$g} = $SYNGROUP{$h};
-		    $GROUP{$SYNGROUP{$h}}->{$set2} = $h;
-		    $GROUP{$SYNGROUP{$g}}->{$set1} = $g;
+		# check to see if these have already been put in a synteny group
+		# and if they are the same. If so, we are done.
+		# If not, apparently merging didn't work so well
+		if (defined $SYNGROUP{$g} && defined $SYNGROUP{$h}){
+			if ($SYNGROUP{$g} == $SYNGROUP{$h}) {
+				# Hooray! These have already been done.
+			} else {
+				# Hrm.
+				# print STDERR "Merging groups $SYNGROUP{$g} and $SYNGROUP{$h}\n";
+				# my $deletegroup = $SYNGROUP{$h};
+				# foreach my $i (keys %{$GROUP{$deletegroup}}) {
+				#     $SYNGROUP{$i} = $SYNGROUP{$g};
+				#     $GROUP{$SYNGROUP{$g}}->{$i} = 1;
+				# }
+				# delete $GROUP{$deletegroup};
+			}
 		} else {
-		    $syngroupcount++;
-		    $SYNGROUP{$g} = $syngroupcount;
-		    $GROUP{$SYNGROUP{$g}}->{$set1} = $g;
-		    $SYNGROUP{$h} = $SYNGROUP{$g};
-		    $GROUP{$SYNGROUP{$h}}->{$set2} = $h;
+			# Let's see if these guys are syntenic.
+			# we will score all combinations, to account for (single) indels and reverse orientation
+			my $syn_score = 0;
+			foreach my $sg ($usg1, $dsg1, $usg2, $dsg2) {
+				foreach my $sh ($ush1, $dsh1, $ush2, $dsh2) {
+					# two points for a match to the paired BBH
+					$syn_score += 2 if ($BBH{$set1}->{$sg} && ($BBH{$set1}->{$sg} eq $sh));
+					# a bonus point if the BBH is a part of a global cluster.
+#					$syn_score += 1 if ($GENECLUST{$set1}->{$sg} && ($GENECLUST{$set1}->{$sg} eq $GENECLUST{$set2}->{$sh}));
+					$syn_score += 1 if ($GENECLUST{$sg} && ($GENECLUST{$sg} eq $GENECLUST{$sh}));
+				}
+			}
+
+			if ($syn_score > 1) {
+				# so now, if one is part of a group, we add the other to the group
+				# otherwise, we start a new syngroup
+				if (defined $SYNGROUP{$g}) {
+					$SYNGROUP{$h} = $SYNGROUP{$g};
+					$GROUP{$SYNGROUP{$g}}->{$set1} = $g;
+					$GROUP{$SYNGROUP{$h}}->{$set2} = $h;
+				} elsif (defined $SYNGROUP{$h}) {
+					$SYNGROUP{$g} = $SYNGROUP{$h};
+					$GROUP{$SYNGROUP{$h}}->{$set2} = $h;
+					$GROUP{$SYNGROUP{$g}}->{$set1} = $g;
+				} else {
+					$syngroupcount++;
+					$SYNGROUP{$g} = $syngroupcount;
+					$GROUP{$SYNGROUP{$g}}->{$set1} = $g;
+					$SYNGROUP{$h} = $SYNGROUP{$g};
+					$GROUP{$SYNGROUP{$h}}->{$set2} = $h;
+				}
+			}
 		}
-	    }
-	}
     }
 }
 
@@ -172,8 +200,8 @@ print "Id\t" . join("\t", sort keys %$GENES) . "\n";
 
 foreach my $i (sort {$a<=>$b} keys %GROUP) {
     print "$i";
-    foreach my $g(sort keys %GENECLUST) {
-	print "\t" . $GROUP{$i}->{$g};
+    foreach my $g(sort keys %$GENES) {
+		print "\t" . $GROUP{$i}->{$g};
     }
     #    print "$g\t";
     #    &explode_print(\%SYN, $g);
@@ -244,7 +272,7 @@ sub process_gtf_file {
 	else { warn "Wait, why is the ID the first field in '$notes'?\n" }
 
 	# clean up the accession
-	my @acc = split/\|/, $racc;
+	my @acc = split(/\|/, $racc);
 	my $acc = @acc > 1 ? $acc[1] : $acc[0];
 	$D{$acc} = { 'posn' => $start,
 			 'dir' => $strand,
@@ -273,6 +301,7 @@ sub process_gff_file {
 
     $file =~ /(.*\/)?(.*)\.gff$/;
     my $set = $2; # = db
+
     if (! $set) { die "Can't get db/set from $file\n"; }
     
     open(my $gff, $file) or die "Can't open $file for read: $!\n";
@@ -299,19 +328,18 @@ sub process_gff_file {
 	if (! $racc) { die "Couldn't find an accession in $notes\n"; }
 
 	# clean up the accession
-	my @acc = split/\|/, $racc;
-	my $acc = @acc > 1 ? $acc[1] : $acc[0];
+	my $acc = id_from_accession($racc);
 	$D{$acc} = { 'posn' => $start,
 			 'dir' => $strand,
 			 'seq' => $seq_acc};
     }
     foreach my $acc (sort {$D{$a}->{seq} cmp $D{$b}->{seq} || $D{$a}->{posn} <=> $D{$b}->{posn}} keys %D) {
-	# build an array of the accessions in order, stored by seq_acc and genome
-	push @{$GENES->{$set}->{$D{$acc}->{seq}}}, $acc;
-	# and a lookup of the genome, seq_acc, and position index by accession
-	$LOOKUP->{$acc} = {'set' => $set,
-			       'seq' => $D{$acc}->{seq},
-			       'idx' => $#{$GENES->{$set}->{$D{$acc}->{seq}}}};
+		# build an array of the accessions in order, stored by seq_acc and genome
+		push @{$GENES->{$set}->{$D{$acc}->{seq}}}, $acc;
+		# and a lookup of the genome, seq_acc, and position index by accession
+		$LOOKUP->{$acc} = {'set' => $set,
+					'seq' => $D{$acc}->{seq},
+			        'idx' => $#{$GENES->{$set}->{$D{$acc}->{seq}}}};
     }
-    
+    return ($set)
 }
